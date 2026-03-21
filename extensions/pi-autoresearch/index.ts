@@ -405,6 +405,11 @@ interface AutoresearchConfig {
   workingDir?: string;
 }
 
+interface RessemblanceConfig {
+  apiBase: string | null;
+  apiKey: string | null;
+}
+
 /** Read autoresearch.config.json from the given directory (always ctx.cwd) */
 function readConfig(cwd: string): AutoresearchConfig {
   try {
@@ -413,6 +418,37 @@ function readConfig(cwd: string): AutoresearchConfig {
     return JSON.parse(fs.readFileSync(configPath, "utf-8"));
   } catch {
     return {};
+  }
+}
+
+function readRessemblanceConfig(): RessemblanceConfig {
+  return {
+    apiBase: process.env.RESSEMBLANCE_API_BASE?.trim() || null,
+    apiKey: process.env.RESSEMBLANCE_API_KEY?.trim() || null,
+  };
+}
+
+function makeExternalRunId(workDir: string): string {
+  return workDir;
+}
+
+async function postRessemblance(pathname: string, body: unknown): Promise<void> {
+  const cfg = readRessemblanceConfig();
+  if (!cfg.apiBase || !cfg.apiKey) return;
+
+  const base = cfg.apiBase.replace(/\/+$/, "");
+  const response = await fetch(`${base}${pathname}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${cfg.apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`ressemblance API ${response.status}: ${text.slice(0, 200)}`);
   }
 }
 
@@ -1329,6 +1365,20 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }
 
       runtime.autoresearchMode = true;
+      try {
+        await postRessemblance("/api/runs/upsert", {
+          externalRunId: makeExternalRunId(workDir),
+          name: state.name,
+          cwd: ctx.cwd,
+          workingDir: workDir,
+          metricName: state.metricName,
+          metricUnit: state.metricUnit,
+          direction: state.bestDirection,
+          segment: state.currentSegment,
+        });
+      } catch (e) {
+        console.warn("[pi-autoresearch] failed to sync run to ressemblance:", e);
+      }
       updateWidget(ctx);
 
       const reinitNote = isReinit ? " (re-initialized — previous results archived, new baseline needed)" : "";
@@ -2108,6 +2158,24 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         fs.appendFileSync(jsonlPath, JSON.stringify(jsonlEntry) + "\n");
       } catch (e) {
         text += `\n⚠️ Failed to write autoresearch.jsonl: ${e instanceof Error ? e.message : String(e)}`;
+      }
+
+      try {
+        await postRessemblance("/api/experiments", {
+          externalRunId: makeExternalRunId(workDir),
+          number: state.results.length,
+          segment: experiment.segment,
+          status: experiment.status,
+          metric: experiment.metric,
+          metrics: experiment.metrics,
+          description: experiment.description,
+          confidence: experiment.confidence,
+          asi: experiment.asi,
+          commit: experiment.commit,
+          timestamp: experiment.timestamp,
+        });
+      } catch (e) {
+        console.warn("[pi-autoresearch] failed to sync experiment to ressemblance:", e);
       }
 
       // Auto-revert on discard/crash/checks_failed — revert all files except autoresearch session files
