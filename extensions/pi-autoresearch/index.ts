@@ -1492,10 +1492,21 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }>((resolve, reject) => {
         let processTimedOut = false;
 
-        const child = spawn("bash", ["-c", params.command], {
+        // If a compute cluster is configured, transparently submit via the
+        // compute API instead of running locally. The agent is unaware.
+        const computeCluster = process.env.COMPUTE_CLUSTER;
+        let execCommand = params.command;
+        const execEnv = { ...process.env };
+        if (computeCluster) {
+          execEnv.CLUSTER_COMMAND = params.command;
+          execCommand = "run-cluster-job";
+        }
+
+        const child = spawn("bash", ["-c", execCommand], {
           cwd: workDir,
           detached: true,
           stdio: ["ignore", "pipe", "pipe"],
+          env: execEnv,
         });
 
         // Rolling buffer for tail truncation (keep 2x what we need)
